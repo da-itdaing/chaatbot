@@ -1,0 +1,43 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	ingest(ingest)
+	guardrail(guardrail)
+	intent_router(intent_router)
+	retrieval_planner(retrieval_planner)
+	vector_retrieval(vector_retrieval)
+	metadata_scan(metadata_scan)
+	web_search(web_search)
+	parallel_sync(parallel_sync)
+	await_parallel(await_parallel)
+	draft_response(draft_response)
+	self_rag_validation(self_rag_validation)
+	corrective_rag(corrective_rag)
+	format_response(format_response)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> ingest;
+	corrective_rag --> format_response;
+	draft_response --> self_rag_validation;
+	guardrail -. &nbsp;blocked&nbsp; .-> format_response;
+	guardrail -. &nbsp;pass&nbsp; .-> intent_router;
+	ingest --> guardrail;
+	intent_router --> retrieval_planner;
+	metadata_scan --> parallel_sync;
+	parallel_sync -. &nbsp;pending&nbsp; .-> await_parallel;
+	parallel_sync -. &nbsp;ready&nbsp; .-> draft_response;
+	retrieval_planner --> metadata_scan;
+	retrieval_planner --> vector_retrieval;
+	retrieval_planner --> web_search;
+	self_rag_validation -. &nbsp;correction&nbsp; .-> corrective_rag;
+	self_rag_validation -. &nbsp;format&nbsp; .-> format_response;
+	vector_retrieval --> parallel_sync;
+	web_search --> parallel_sync;
+	await_parallel --> __end__;
+	format_response --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
