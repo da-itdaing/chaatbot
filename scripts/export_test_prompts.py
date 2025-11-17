@@ -10,7 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 SOURCE_MD = ROOT_DIR / "docs" / "test_prompt.md"
 TARGET_JSON = ROOT_DIR / "data" / "test_prompts.json"
 
-Role = Literal["consumer", "seller", "edge"]
+Role = Literal["consumer", "edge"]
 
 
 class PromptRecord(TypedDict):
@@ -25,8 +25,6 @@ def _role_from_heading(heading: str) -> Role:
     lowered = heading.lower()
     if "소비자" in lowered or "consumer" in lowered:
         return "consumer"
-    if "판매자" in lowered or "seller" in lowered:
-        return "seller"
     return "edge"
 
 

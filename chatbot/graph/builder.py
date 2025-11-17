@@ -1,21 +1,31 @@
-"""LangGraph builder for the chatbot with parallel retrieval + Self-RAG."""
+"""LangGraph builder for the chatbot with semantic query analysis + Self-RAG."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Sequence
 
 from langgraph.graph import END, START, StateGraph
 
 from ..config import get_settings
-from ..dataset.loader import load_seed_dataset
 from ..flows.consumer import recommend
-from ..flows.seller import guide
-from ..formatting.response_builder import format_consumer, format_seller
-from ..guardrails import rules
-from ..retrieval.query_parser import find_matches
-from .state import ChatbotState, Role
-
-SELLER_KEYWORDS = ["입점", "판매", "부스", "출점", "셀러", "신청"]
-WEB_KEYWORDS = ["웹", "검색", "날씨", "트렌드", "리뷰", "후기"]
+from ..formatting.response_builder import format_consumer
+from .state import ChatbotState
+CONSUMER_KEYWORDS = [
+    "플리마켓",
+    "마켓",
+    "셀러",
+    "부스",
+    "행사",
+    "팝업",
+    "공연",
+    "체험",
+    "추천",
+    "광주",
+    "남구",
+    "북구",
+    "페스티벌",
+    "벼룩시장",
+]
 SMALLTALK_KEYWORDS = [
     "너",
     "소개",
@@ -27,224 +37,152 @@ SMALLTALK_KEYWORDS = [
     "정체",
     "스스로",
     "생각",
+    "시간",
+    "날씨",
 ]
-
-
-def _detect_role(query: str, fallback: Role) -> Role:
-    lower_query = query.lower()
-    for keyword in SELLER_KEYWORDS:
-        if keyword in lower_query:
-            return "seller"
-    return fallback
-
-
-def _mark_completed(existing: List[str] | None, task: str) -> List[str]:
-    completed = list(existing or [])
-    if task not in completed:
-        completed.append(task)
-    return completed
-
-
+OFF_DOMAIN_KEYWORDS = ["날씨", "검색", "뉴스", "정치", "주식", "코인"]
 def _ensure_dict(mapping: Dict[str, Any] | None) -> Dict[str, Any]:
     return dict(mapping) if mapping else {}
 
 
-def _maybe_build_smalltalk(query: str, role: Role) -> str | None:
-    normalized = (query or "").strip()
-    if not normalized:
-        return None
-    lower = normalized.lower()
-    if not any(keyword in lower for keyword in SMALLTALK_KEYWORDS):
-        return None
-    role_hint = "판매자 분" if role == "seller" else "방문객 분"
-    return (
-        f"저는 광주 지역 팝업·플리마켓 정보를 정리해 드리는 AI 코디네이터예요. "
-        f"{role_hint}이 궁금해할 만한 존과 셀 상황을 LangGraph 워크플로에서 정리해서 전달하고 있어요. "
-        "궁금한 행사나 원하는 분위기를 알려주시면 바로 추천을 이어갈게요!"
-    )
+def _count_hits(text: str, keywords: Sequence[str]) -> int:
+    lowered = text.lower()
+    return sum(1 for keyword in keywords if keyword in lowered)
+
+
+def _tokenize(text: str) -> set[str]:
+    return {token for token in text.lower().replace("\n", " ").split() if token}
+
+
+def _overlap_score(query_tokens: set[str], candidate: str) -> float:
+    if not query_tokens:
+        return 0.0
+    candidate_tokens = _tokenize(candidate)
+    if not candidate_tokens:
+        return 0.0
+    overlap = len(query_tokens & candidate_tokens)
+    return overlap / max(len(query_tokens), 1)
 
 
 def ingest_node(state: ChatbotState) -> ChatbotState:
     query = (state.get("query") or "").strip()
-    role = state.get("role") or _detect_role(query, "consumer")
-    return {"query": query, "role": role}
+    return {"query": query}
 
 
-def guardrail_node(state: ChatbotState) -> ChatbotState:
-    result = rules.evaluate(state.get("query", ""))
-    if result.triggered:
-        return {
-            "guardrail_triggered": True,
-            "guardrail_reason": result.reason or "",
-            "response": result.response or "요청을 처리할 수 없습니다.",
-        }
-    return {"guardrail_triggered": False, "guardrail_reason": ""}
+def _build_smalltalk_message(query: str) -> str:
+    normalized = query.strip()
+    if not normalized:
+        return (
+            "저는 광주 지역 플리마켓과 팝업 정보를 정리해 드리는 AI 코디네이터예요. "
+            "원하시는 분위기나 시간대를 알려주시면 바로 살펴볼게요!"
+        )
+    return (
+        "저는 광주 지역 플리마켓·팝업 정보를 추천해 드리는 AI예요. "
+        f"'{normalized}'에 대해 이야기해 보고 싶다면 어떤 행사나 분위기를 찾는지도 함께 알려주세요."
+    )
 
 
-def intent_router_node(state: ChatbotState) -> ChatbotState:
+def query_analysis_node(state: ChatbotState) -> ChatbotState:
     query = state.get("query", "")
-    role = _detect_role(query, state.get("role", "consumer"))
-    insights = _ensure_dict(state.get("insights"))
-    smalltalk = _maybe_build_smalltalk(query, role)
-    insights["intent"] = {
-        "role": role,
-        "confidence": 0.8 if role == state.get("role") else 0.6,
-        "type": "smalltalk" if smalltalk else "domain",
+    normalized = query.lower()
+    consumer_hits = _count_hits(normalized, CONSUMER_KEYWORDS)
+    smalltalk_hits = _count_hits(normalized, SMALLTALK_KEYWORDS)
+    off_domain_hits = _count_hits(normalized, OFF_DOMAIN_KEYWORDS)
+    index_relevant = bool(query) and consumer_hits >= max(smalltalk_hits, off_domain_hits)
+    confidence = min(1.0, 0.35 + 0.15 * consumer_hits)
+    if not index_relevant and query:
+        confidence = max(0.0, confidence - 0.2)
+    analysis = {
+        "normalized": normalized,
+        "consumer_hits": consumer_hits,
+        "smalltalk_hits": smalltalk_hits,
+        "off_domain_hits": off_domain_hits,
+        "index_relevant": index_relevant,
+        "confidence": round(confidence, 2),
+        "reason": "consumer_intent" if index_relevant else "off_domain_or_smalltalk",
     }
-    payload: Dict[str, Any] = {"role": role, "insights": insights}
-    if smalltalk:
-        payload.update({"special_response": smalltalk, "bypass_retrieval": True})
-    return payload
+    insights = _ensure_dict(state.get("insights"))
+    insights["analysis"] = analysis
+    return {"analysis": analysis, "insights": insights}
 
 
-def retrieval_planner_node(state: ChatbotState) -> ChatbotState:
-    if state.get("bypass_retrieval"):
-        insights = _ensure_dict(state.get("insights"))
-        insights["retrieval_plan"] = []
-        return {
-            "retrieval_tasks": [],
-            "completed_tasks": [],
-            "insights": insights,
-        }
-    query = state.get("query", "").lower()
-    tasks: List[str] = ["vector", "metadata"]
-    if any(keyword in query for keyword in WEB_KEYWORDS):
-        tasks.append("web")
-    insights = _ensure_dict(state.get("insights"))
-    insights["retrieval_plan"] = tasks
-    return {
-        "retrieval_tasks": tasks,
-        "completed_tasks": [],
-        "insights": insights,
-        "evidence": _ensure_dict(state.get("evidence")),
-    }
+def route_after_query_analysis(state: ChatbotState) -> str:
+    analysis = state.get("analysis") or {}
+    return "retrieval" if analysis.get("index_relevant") else "smalltalk"
+
+
+def general_response_node(state: ChatbotState) -> ChatbotState:
+    query = state.get("query", "")
+    analysis = state.get("analysis") or {}
+    grade = state.get("grade") or {}
+    if not analysis.get("index_relevant"):
+        message = _build_smalltalk_message(query)
+    elif grade.get("status") == "retry":
+        message = (
+            "질문을 이해했지만 적절한 장소를 아직 찾지 못했어요. "
+            "조금 더 구체적인 분위기나 지역을 알려주시면 다시 찾아볼게요."
+        )
+    else:
+        message = (
+            "간단한 안내만 필요한 것으로 분석되어 짧게 답변드렸어요. "
+            "필요하시면 구체적인 조건을 알려주세요."
+        )
+    return {"special_response": message, "bypass_retrieval": True}
 
 
 def vector_retrieval_node(state: ChatbotState) -> ChatbotState:
-    if "vector" not in state.get("retrieval_tasks", []):
-        return {}
     settings = get_settings()
     query = state.get("query", "")
-    role = state.get("role", "consumer")
-    if role == "seller":
-        items = guide(query, limit=settings.max_results)
-    else:
-        items = recommend(query, limit=settings.max_results)
+    items = recommend(query, limit=settings.max_results)
     evidence = _ensure_dict(state.get("evidence"))
     evidence["vector"] = items
     return {
         "context_items": items,
-        "completed_tasks": _mark_completed(state.get("completed_tasks"), "vector"),
         "evidence": evidence,
     }
 
 
-def _summarize_zone_metadata(query: str, limit: int = 3) -> List[Dict[str, Any]]:
-    data = load_seed_dataset()
-    region_ids = find_matches(query, data["regions"], "region_id", "name")
-    summaries: List[Dict[str, Any]] = []
-    for zone in data["zones"]:
-        if region_ids and zone["region_id"] not in region_ids:
-            continue
-        approved = sum(1 for cell in zone["cells"] if cell["status"] == "APPROVED")
-        pending = sum(1 for cell in zone["cells"] if cell["status"] == "PENDING")
-        summaries.append(
-            {
-                "zone": zone["name"],
-                "region_id": zone["region_id"],
-                "approved_cells": approved,
-                "waitlist": pending,
-                "amenities": zone["features"][:3],
-            }
-        )
-    if not summaries:
-        summaries = [
-            {
-                "zone": zone["name"],
-                "region_id": zone["region_id"],
-                "approved_cells": sum(1 for cell in zone["cells"] if cell["status"] == "APPROVED"),
-                "waitlist": sum(1 for cell in zone["cells"] if cell["status"] == "PENDING"),
-                "amenities": zone["features"][:3],
-            }
-            for zone in data["zones"][:limit]
-        ]
-    return summaries[:limit]
-
-
-def metadata_scan_node(state: ChatbotState) -> ChatbotState:
-    if "metadata" not in state.get("retrieval_tasks", []):
-        return {}
-    summaries = _summarize_zone_metadata(state.get("query", ""))
-    evidence = _ensure_dict(state.get("evidence"))
-    evidence["metadata"] = summaries
+def doc_grader_node(state: ChatbotState) -> ChatbotState:
+    query = state.get("query", "")
+    items = state.get("context_items") or []
+    query_tokens = _tokenize(query)
+    if not items:
+        grade = {"status": "retry", "score": 0.0, "reason": "no_items"}
+    else:
+        overlaps: List[float] = []
+        for item in items:
+            text = " ".join(
+                str(part)
+                for part in [item.get("name"), item.get("description"), " ".join(item.get("attributes", []))]
+                if part
+            )
+            overlaps.append(_overlap_score(query_tokens, text))
+        best_overlap = max(overlaps) if overlaps else 0.0
+        threshold = 0.18 if len(query_tokens) > 3 else 0.12
+        status = "pass" if best_overlap >= threshold else "retry"
+        grade = {"status": status, "score": round(best_overlap, 2), "reason": "overlap"}
     insights = _ensure_dict(state.get("insights"))
-    insights["metadata_sample"] = summaries
-    return {
-        "completed_tasks": _mark_completed(state.get("completed_tasks"), "metadata"),
-        "evidence": evidence,
-        "insights": insights,
-    }
+    insights["grade"] = grade
+    return {"grade": grade, "insights": insights}
 
 
-def _synthesize_web_updates(query: str, missing_facets: List[str]) -> List[Dict[str, str]]:
-    facets = missing_facets or ["행사 일정", "셀러 후기", "교통 접근"]
-    return [
-        {
-            "source": "search",
-            "title": f"{facet} 참고",
-            "snippet": f"{query[:30]}... 관련 {facet} 최신 리포트를 확인했습니다.",
-        }
-        for facet in facets[:3]
-    ]
-
-
-def web_search_node(state: ChatbotState) -> ChatbotState:
-    if "web" not in state.get("retrieval_tasks", []):
-        return {}
-    missing = state.get("validation", {}).get("missing_facets", [])
-    results = _synthesize_web_updates(state.get("query", ""), missing)
-    evidence = _ensure_dict(state.get("evidence"))
-    evidence["web"] = results
-    return {
-        "completed_tasks": _mark_completed(state.get("completed_tasks"), "web"),
-        "evidence": evidence,
-    }
-
-
-def parallel_sync_node(state: ChatbotState) -> ChatbotState:
-    tasks = state.get("retrieval_tasks", [])
-    completed = state.get("completed_tasks", [])
-    ready = not tasks or set(completed) >= set(tasks)
-    return {"parallel_ready": ready}
-
-
-def route_after_parallel(state: ChatbotState) -> str:
-    return "ready" if state.get("parallel_ready") else "pending"
-
-
-def await_parallel_node(state: ChatbotState) -> ChatbotState:
-    # 단순히 상태를 유지하며 다른 분기가 끝나기를 기다린다.
-    return {}
+def route_after_grade(state: ChatbotState) -> str:
+    grade = state.get("grade") or {}
+    return "answer" if grade.get("status") == "pass" else "fallback"
 
 
 def draft_response_node(state: ChatbotState) -> ChatbotState:
-    if state.get("special_response"):
-        return {"draft_response": state["special_response"]}
     items = state.get("context_items") or state.get("evidence", {}).get("vector") or []
     if not items:
         return {
             "draft_response": "조건에 맞는 장소를 아직 찾지 못했어요. 다른 분위기나 지역을 알려주시면 다시 찾아볼게요.",
         }
-    if state.get("role") == "seller":
-        draft = format_seller(items)
-    else:
-        draft = format_consumer(items)
-    return {"draft_response": draft}
+    return {"draft_response": format_consumer(items)}
 
 
 def self_rag_validation_node(state: ChatbotState) -> ChatbotState:
     if state.get("bypass_retrieval") or state.get("special_response"):
-        return {"validation": None, "needs_correction": False}
+        return {"validation": {}, "needs_correction": False}
     draft = state.get("draft_response", "")
     context = state.get("context_items", [])
     query = state.get("query", "").lower()
@@ -253,8 +191,6 @@ def self_rag_validation_node(state: ChatbotState) -> ChatbotState:
         required_terms.append("야간")
     if "프리미엄" in query:
         required_terms.append("프리미엄")
-    if "셀러" in query or state.get("role") == "seller":
-        required_terms.append("셀")
     missing = [term for term in required_terms if term not in draft]
     coverage = round(min(1.0, len(context) / max(1, get_settings().max_results)), 2)
     status = "fail" if missing or coverage < 0.4 else "pass"
@@ -274,11 +210,7 @@ def corrective_rag_node(state: ChatbotState) -> ChatbotState:
     missing = state.get("validation", {}).get("missing_facets", [])
     augmented_query = f"{state.get('query', '')} {' '.join(missing)}".strip()
     settings = get_settings()
-    role = state.get("role", "consumer")
-    if role == "seller":
-        items = guide(augmented_query or state.get("query", ""), limit=settings.max_results)
-    else:
-        items = recommend(augmented_query or state.get("query", ""), limit=settings.max_results)
+    items = recommend(augmented_query or state.get("query", ""), limit=settings.max_results)
     insights = _ensure_dict(state.get("insights"))
     insights["corrections"] = {"missing": missing, "applied": len(missing) > 0}
     validation = _ensure_dict(state.get("validation"))
@@ -292,17 +224,13 @@ def corrective_rag_node(state: ChatbotState) -> ChatbotState:
 
 
 def formatter_node(state: ChatbotState) -> ChatbotState:
-    if state.get("guardrail_triggered"):
-        return {}
-    if state.get("special_response"):
-        return {"response": state["special_response"]}
+    special = state.get("special_response")
+    if special:
+        return {"response": special}
     items = state.get("context_items", [])
     if not items:
         return {"response": "요청 조건에 맞는 정보를 찾지 못했습니다. 다른 조건으로 다시 문의해 주세요."}
-    if state.get("role") == "seller":
-        body = format_seller(items)
-    else:
-        body = format_consumer(items)
+    body = format_consumer(items)
     validation = state.get("validation") or {}
     insights = state.get("insights", {})
     corrections = insights.get("corrections") or {}
@@ -315,40 +243,30 @@ def formatter_node(state: ChatbotState) -> ChatbotState:
     return {"response": response}
 
 
-def build_app():
+def create_graph() -> StateGraph[ChatbotState]:
     graph = StateGraph(ChatbotState)
     graph.add_node("ingest", ingest_node)
-    graph.add_node("guardrail", guardrail_node)
-    graph.add_node("intent_router", intent_router_node)
-    graph.add_node("retrieval_planner", retrieval_planner_node)
+    graph.add_node("query_analysis", query_analysis_node)
+    graph.add_node("general_response", general_response_node)
     graph.add_node("vector_retrieval", vector_retrieval_node)
-    graph.add_node("metadata_scan", metadata_scan_node)
-    graph.add_node("web_search", web_search_node)
-    graph.add_node("parallel_sync", parallel_sync_node)
-    graph.add_node("await_parallel", await_parallel_node)
+    graph.add_node("doc_grader", doc_grader_node)
     graph.add_node("draft_response", draft_response_node)
     graph.add_node("self_rag_validation", self_rag_validation_node)
     graph.add_node("corrective_rag", corrective_rag_node)
     graph.add_node("format_response", formatter_node)
 
     graph.add_edge(START, "ingest")
-    graph.add_edge("ingest", "guardrail")
+    graph.add_edge("ingest", "query_analysis")
     graph.add_conditional_edges(
-        "guardrail",
-        lambda state: "blocked" if state.get("guardrail_triggered") else "pass",
-        {"blocked": "format_response", "pass": "intent_router"},
+        "query_analysis",
+        route_after_query_analysis,
+        {"retrieval": "vector_retrieval", "smalltalk": "general_response"},
     )
-    graph.add_edge("intent_router", "retrieval_planner")
-    graph.add_edge("retrieval_planner", "vector_retrieval")
-    graph.add_edge("retrieval_planner", "metadata_scan")
-    graph.add_edge("retrieval_planner", "web_search")
-    graph.add_edge("vector_retrieval", "parallel_sync")
-    graph.add_edge("metadata_scan", "parallel_sync")
-    graph.add_edge("web_search", "parallel_sync")
+    graph.add_edge("vector_retrieval", "doc_grader")
     graph.add_conditional_edges(
-        "parallel_sync",
-        route_after_parallel,
-        {"ready": "draft_response", "pending": "await_parallel"},
+        "doc_grader",
+        route_after_grade,
+        {"answer": "draft_response", "fallback": "general_response"},
     )
     graph.add_edge("draft_response", "self_rag_validation")
     graph.add_conditional_edges(
@@ -357,5 +275,54 @@ def build_app():
         {"correction": "corrective_rag", "format": "format_response"},
     )
     graph.add_edge("corrective_rag", "format_response")
+    graph.add_edge("general_response", "format_response")
     graph.add_edge("format_response", END)
-    return graph.compile()
+    return graph
+
+
+def build_app():
+    return create_graph().compile()
+
+
+def _graph_to_mermaid(graph: StateGraph[ChatbotState]) -> str:
+    lines = [
+        "---",
+        "config:",
+        "  flowchart:",
+        "    curve: linear",
+        "---",
+        "graph TD;",
+    ]
+    seen_nodes = [START, *sorted(graph.nodes.keys()), END]
+    for node in seen_nodes:
+        if node == START:
+            lines.append('\t__start__([<p>__start__</p>]):::first')
+        elif node == END:
+            lines.append('\t__end__([<p>__end__</p>]):::last')
+        else:
+            lines.append(f"\t{node}({node})")
+
+    for start, end in sorted(graph._all_edges):  # type: ignore[attr-defined]
+        lines.append(f"\t{start} --> {end};")
+
+    for source, branches in graph.branches.items():
+        for branch in branches.values():
+            if not branch.ends:
+                continue
+            for label, target in branch.ends.items():
+                lines.append(f"\t{source} -. &nbsp;{label}&nbsp; .-> {target};")
+
+    lines.append("\tclassDef default fill:#f2f0ff,line-height:1.2")
+    lines.append("\tclassDef first fill-opacity:0")
+    lines.append("\tclassDef last fill:#bfb6fc")
+    return "\n".join(lines)
+
+
+def render_mermaid_diagram(output_path: str | Path | None = None) -> str:
+    graph = create_graph()
+    diagram = _graph_to_mermaid(graph)
+    if output_path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(diagram, encoding="utf-8")
+    return diagram

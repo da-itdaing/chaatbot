@@ -6,7 +6,6 @@ config:
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	ingest(ingest)
-	guardrail(guardrail)
 	intent_router(intent_router)
 	retrieval_planner(retrieval_planner)
 	vector_retrieval(vector_retrieval)
@@ -22,9 +21,7 @@ graph TD;
 	__start__ --> ingest;
 	corrective_rag --> format_response;
 	draft_response --> self_rag_validation;
-	guardrail -. &nbsp;blocked&nbsp; .-> format_response;
-	guardrail -. &nbsp;pass&nbsp; .-> intent_router;
-	ingest --> guardrail;
+	ingest --> intent_router;
 	intent_router --> retrieval_planner;
 	metadata_scan --> parallel_sync;
 	parallel_sync -. &nbsp;pending&nbsp; .-> await_parallel;
@@ -36,7 +33,7 @@ graph TD;
 	self_rag_validation -. &nbsp;format&nbsp; .-> format_response;
 	vector_retrieval --> parallel_sync;
 	web_search --> parallel_sync;
-	await_parallel --> __end__;
+	await_parallel --> parallel_sync;
 	format_response --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0

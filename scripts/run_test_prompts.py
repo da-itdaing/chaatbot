@@ -6,12 +6,11 @@ import argparse
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Sequence
 
 from dotenv import load_dotenv
 
 from chatbot.app import run_chatbot
-from chatbot.graph.state import Role
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = ROOT_DIR / "data" / "test_prompts.json"
@@ -28,22 +27,10 @@ def _load_prompts(path: Path) -> Sequence[dict]:
     return prompts
 
 
-def _select_roles(values: Sequence[str]) -> List[Role]:
-    if not values or "all" in values:
-        return ["consumer", "seller"]
-    allowed: List[Role] = []
-    for value in values:
-        lowered = value.lower()
-        if lowered in {"consumer", "seller"}:
-            allowed.append(lowered)  # type: ignore[arg-type]
-    return allowed or ["consumer", "seller"]
-
-
-def _iter_records(prompts: Sequence[dict], roles: Iterable[Role]):
-    allowed = set(roles)
+def _iter_consumer_records(prompts: Sequence[dict]):
     for prompt in prompts:
-        role = prompt.get("role")
-        if role not in allowed:
+        role = (prompt.get("role") or "consumer").lower()
+        if role != "consumer":
             continue
         yield prompt
 
@@ -57,15 +44,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run stored test prompts via the chatbot")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="프롬프트 JSON 경로")
     parser.add_argument("--output", type=Path, help="결과 JSON 출력 경로")
-    parser.add_argument("--roles", nargs="*", default=["consumer", "seller"], help="실행할 역할 필터")
     parser.add_argument("--limit", type=int, default=0, help="실행할 최대 프롬프트 수 (0=전체)")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     load_dotenv()
 
     prompts = _load_prompts(args.input)
-    roles = _select_roles(args.roles)
-    selected = list(_iter_records(prompts, roles))
+    selected = list(_iter_consumer_records(prompts))
     if args.limit and args.limit > 0:
         selected = selected[: args.limit]
 
@@ -80,12 +65,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     failures = 0
     for record in selected:
         prompt_id = record.get("id")
-        role: Role = record.get("role", "consumer")  # type: ignore[assignment]
+        role = "consumer"
         text = record.get("text", "")
         error: str | None = None
         response: str | None = None
         try:
-            response = run_chatbot(role, text)
+            response = run_chatbot(text)
         except Exception as exc:  # pragma: no cover - diagnostic only
             error = str(exc)
             failures += 1
@@ -104,7 +89,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "generated_at": datetime.now(UTC).isoformat(),
         "input_file": str(args.input.relative_to(ROOT_DIR)) if args.input.is_relative_to(ROOT_DIR) else str(args.input),
         "count": len(records),
-        "roles": roles,
+        "roles": ["consumer"],
         "failures": failures,
         "results": records,
     }

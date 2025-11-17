@@ -1,0 +1,33 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	corrective_rag(corrective_rag)
+	doc_grader(doc_grader)
+	draft_response(draft_response)
+	format_response(format_response)
+	general_response(general_response)
+	ingest(ingest)
+	query_analysis(query_analysis)
+	self_rag_validation(self_rag_validation)
+	vector_retrieval(vector_retrieval)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> ingest;
+	corrective_rag --> format_response;
+	draft_response --> self_rag_validation;
+	format_response --> __end__;
+	general_response --> format_response;
+	ingest --> query_analysis;
+	vector_retrieval --> doc_grader;
+	query_analysis -. &nbsp;retrieval&nbsp; .-> vector_retrieval;
+	query_analysis -. &nbsp;smalltalk&nbsp; .-> general_response;
+	doc_grader -. &nbsp;answer&nbsp; .-> draft_response;
+	doc_grader -. &nbsp;fallback&nbsp; .-> general_response;
+	self_rag_validation -. &nbsp;correction&nbsp; .-> corrective_rag;
+	self_rag_validation -. &nbsp;format&nbsp; .-> format_response;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
