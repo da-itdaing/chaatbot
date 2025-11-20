@@ -30,6 +30,7 @@ env/
 # Environment Variables
 .env
 .env.local
+chatbot.env
 
 # IDE
 .vscode/
