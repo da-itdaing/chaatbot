@@ -1,0 +1,309 @@
+Project daitdaing_chatbot {
+  database_type: "PostgreSQL"
+  note: "Core tables for Itdaing chatbot integration (popups, sellers, preferences, messaging, pgvector)."
+}
+
+Table users {
+  id bigint [pk]
+  login_id varchar(100) [not null, unique]
+  password varchar(255) [not null]
+  name varchar(100)
+  nickname varchar(100)
+  email varchar(255) [not null, unique]
+  age_group int
+  mbti varchar(20)
+  role varchar(20) [not null, note: "CONSUMER | SELLER | ADMIN"]
+  profile_image_url varchar(500)
+  profile_image_key varchar(255)
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table seller_profile {
+  user_id bigint [pk, ref: > users.id]
+  profile_image_url varchar(500)
+  introduction varchar(500)
+  activity_region varchar(100)
+  sns_url varchar(200)
+  category varchar(100)
+  contact_phone varchar(50)
+  profile_image_key varchar(255)
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table zone_area {
+  id bigint [pk]
+  region_id bigint
+  name varchar(100) [not null]
+  geometry_data text
+  status varchar(20) [not null, note: "AVAILABLE | UNAVAILABLE | HIDDEN"]
+  max_capacity int
+  notice varchar(1000)
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table zone_cell {
+  id bigint [pk]
+  zone_area_id bigint [not null, ref: > zone_area.id]
+  owner_id bigint [not null, ref: > users.id]
+  label varchar(100)
+  detailed_address varchar(255)
+  lat double [not null]
+  lng double [not null]
+  status varchar(20) [not null, note: "PENDING | APPROVED | REJECTED | HIDDEN"]
+  max_capacity int
+  notice varchar(1000)
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table zone_availability {
+  id bigint [pk]
+  zone_cell_id bigint [not null, ref: > zone_cell.id]
+  start_date date [not null]
+  end_date date [not null]
+  daily_price numeric(14,2) [not null]
+  max_concurrent_slots int [not null, default: `1`]
+  status varchar(20) [not null, default: "ACTIVE"]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table popup {
+  id bigint [pk]
+  seller_id bigint [not null, ref: > users.id]
+  zone_cell_id bigint [not null, ref: > zone_cell.id]
+  name varchar(200) [not null]
+  description text
+  start_date date
+  end_date date
+  operating_time varchar(50)
+  approval_status varchar(20) [not null, note: "PENDING | APPROVED | REJECTED"]
+  rejection_reason varchar(500)
+  view_count bigint [not null, default: `0`]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table popup_category {
+  id bigint [pk]
+  popup_id bigint [not null, ref: > popup.id]
+  category_id bigint [not null, ref: > category.id]
+}
+
+Table popup_feature {
+  id bigint [pk]
+  popup_id bigint [not null, ref: > popup.id]
+  feature_id bigint [not null]
+}
+
+Table popup_style {
+  id bigint [pk]
+  popup_id bigint [not null, ref: > popup.id]
+  style_id bigint [not null]
+}
+
+Table popup_image {
+  id bigint [pk]
+  popup_id bigint [not null, ref: > popup.id]
+  image_url varchar(500) [not null]
+  image_key varchar(255)
+  is_main boolean
+}
+
+Table category {
+  id bigint [pk]
+  name varchar(100) [not null]
+  type varchar(20) [not null, note: "POPUP | CONSUMER"]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table daily_consumer_recommendation {
+  id bigint [pk]
+  consumer_id bigint [not null, ref: > users.id]
+  popup_id bigint [not null, ref: > popup.id]
+  recommendation_date date [not null]
+  score numeric(6,3) [not null, default: `0`]
+  model_version varchar(50)
+  reason_json text
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+
+  indexes {
+    (consumer_id, recommendation_date, popup_id) [unique, name: "uk_dcr_dedup"]
+  }
+}
+
+Table daily_seller_recommendation {
+  id bigint [pk]
+  seller_id bigint [not null, ref: > users.id]
+  zone_area_id bigint [not null, ref: > zone_area.id]
+  recommendation_date date [not null]
+  score numeric(6,3) [not null, default: `0`]
+  model_version varchar(50)
+  reason_json text
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+
+  indexes {
+    (seller_id, recommendation_date, zone_area_id) [unique, name: "uk_dsr_dedup"]
+  }
+}
+
+Table user_pref_category {
+  id bigint [pk]
+  user_id bigint [not null, ref: > users.id]
+  category_id bigint [not null, ref: > category.id]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+
+  indexes {
+    (user_id, category_id) [unique, name: "uk_user_category"]
+  }
+}
+
+Table user_pref_feature {
+  id bigint [pk]
+  user_id bigint [not null, ref: > users.id]
+  feature_id bigint [not null]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+
+  indexes {
+    (user_id, feature_id) [unique, name: "uk_user_feature"]
+  }
+}
+
+Table user_pref_region {
+  id bigint [pk]
+  user_id bigint [not null, ref: > users.id]
+  region_id bigint [not null]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+
+  indexes {
+    (user_id, region_id) [unique, name: "uk_user_region"]
+  }
+}
+
+Table user_pref_style {
+  id bigint [pk]
+  user_id bigint [not null, ref: > users.id]
+  style_id bigint [not null]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+
+  indexes {
+    (user_id, style_id) [unique, name: "uk_user_style"]
+  }
+}
+
+Table message_thread {
+  id bigint [pk]
+  seller_id bigint [not null, ref: > users.id]
+  admin_id bigint [ref: > users.id]
+  subject varchar(200) [not null]
+  unread_for_seller int [not null]
+  unread_for_admin int [not null]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table message {
+  id bigint [pk]
+  thread_id bigint [not null, ref: > message_thread.id]
+  sender_id bigint [not null, ref: > users.id]
+  receiver_id bigint [not null, ref: > users.id]
+  title varchar(200) [not null]
+  content text
+  sent_at timestamp [not null]
+  read_at timestamp
+  sender_deleted_at timestamp
+  receiver_deleted_at timestamp
+}
+
+Table message_attachment {
+  id bigint [pk]
+  message_id bigint [not null, ref: > message.id]
+  file_url varchar(500) [not null]
+  mime_type varchar(100)
+  file_key varchar(500)
+  original_name varchar(255)
+  size_bytes bigint
+}
+
+Table guardrail_policy {
+  id int [pk]
+  service_area varchar(255) [not null]
+  forbidden_keywords text[] [not null]
+  disallowed_topics text[] [not null]
+  updated_at timestamp [not null]
+}
+
+Table event_log {
+  id bigint [pk]
+  user_id bigint [ref: > users.id]
+  popup_id bigint [ref: > popup.id]
+  zone_cell_id bigint [ref: > zone_cell.id]
+  action_type varchar(20) [not null, note: "VIEW | FAVORITE | REVIEW | CLICK"]
+  created_at timestamp [not null]
+}
+
+Table event_log_category {
+  id bigint [pk]
+  event_log_id bigint [not null, ref: > event_log.id]
+  category_id bigint [not null, ref: > category.id]
+  user_id bigint [ref: > users.id]
+}
+
+Table chatbot_prompt {
+  id bigint [pk]
+  prompt_id text [not null, unique]
+  title text
+  source_context text
+  category text
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table chatbot_prompt_embedding {
+  id bigint [pk]
+  prompt_id bigint [not null, ref: > chatbot_prompt.id]
+  chunk_index int [not null]
+  chunk_text text [not null]
+  embedding vector(1536) [not null]
+  metadata jsonb
+  created_at timestamp [not null]
+
+  indexes {
+    (prompt_id)
+    (embedding) [type: ivfflat, name: "idx_chatbot_prompt_embedding_vector", note: "vector_cosine_ops, lists=100"]
+  }
+}
+
+Table langchain_pg_collection {
+  uuid uuid [pk]
+  name varchar [not null, unique]
+  cmetadata json
+}
+
+Table langchain_pg_embedding {
+  id varchar [pk]
+  collection_id uuid [ref: > langchain_pg_collection.uuid]
+  embedding vector
+  document varchar
+  cmetadata jsonb
+
+  indexes {
+    (cmetadata) [type: gin, name: "ix_cmetadata_gin"]
+  }
+}
+
+Table chatbot_prompt_embedding_map {
+  prompt_id bigint [ref: > chatbot_prompt.id]
+  embedding_id varchar [ref: > langchain_pg_embedding.id]
+  note: "Logical view linking langchain embeddings back to prompts (not a physical table)."
+}
